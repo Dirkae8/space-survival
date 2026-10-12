@@ -184,11 +184,12 @@ function makeAtmosphere(radius, colour, opacity = 0.72) {
   return new THREE.Mesh(new THREE.SphereGeometry(radius, 48, 32), material);
 }
 
-function makeGlobe(planet, radius, textureSize = 1024) {
+function makeGlobe(planet, radius, textureSize = 512) {
   const group = new THREE.Group();
   const texture = makePlanetTexture(planet, textureSize);
+  const segments = textureSize >= 512 ? 48 : 28;
   const surface = new THREE.Mesh(
-    new THREE.SphereGeometry(radius, 80, 56),
+    new THREE.SphereGeometry(radius, segments, Math.round(segments * 0.68)),
     new THREE.MeshStandardMaterial({
       map: texture,
       bumpMap: texture,
@@ -228,8 +229,8 @@ function terrainHeight(x, z, seed, scale = 1) {
   return ((broad - 0.5) * 23 + (mid - 0.5) * 9 + (fine - 0.5) * 2.8 + (ridges - 0.45) * 3) * scale;
 }
 
-function makeSurfaceMaps(planet) {
-  const sourceSize = 1024;
+function makeSurfaceMaps(planet, quality = 'balanced') {
+  const sourceSize = quality === 'high' ? 768 : 512;
   const source = document.createElement('canvas');
   source.width = sourceSize;
   source.height = sourceSize;
@@ -310,11 +311,12 @@ function makeSurfaceMaps(planet) {
   return { map: makeTexture(source, true), bumpMap: makeTexture(heightCanvas) };
 }
 
-function makeTerrainMaterial(planet) {
+function makeTerrainMaterial(planet, quality = 'balanced') {
   const low = new THREE.Color(planet.palette.soil);
   const middle = new THREE.Color(planet.palette.rock);
   const high = new THREE.Color(planet.palette.high);
-  const geometry = new THREE.PlaneGeometry(460, 460, 224, 224);
+  const terrainSegments = quality === 'high' ? 176 : 112;
+  const geometry = new THREE.PlaneGeometry(460, 460, terrainSegments, terrainSegments);
   const positions = geometry.attributes.position;
   const colors = new Float32Array(positions.count * 3);
   const color = new THREE.Color();
@@ -335,7 +337,7 @@ function makeTerrainMaterial(planet) {
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geometry.rotateX(-Math.PI / 2);
   geometry.computeVertexNormals();
-  const maps = makeSurfaceMaps(planet);
+  const maps = makeSurfaceMaps(planet, quality);
   const mesh = new THREE.Mesh(
     geometry,
     new THREE.MeshStandardMaterial({
@@ -469,13 +471,14 @@ function isTypingTarget(target) {
 export class World {
   constructor(canvas) {
     this.canvas = canvas;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    this.quality = 'balanced';
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: 'default' });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.05));
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.12;
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = false;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     window.__perigeeMaxAnisotropy = this.renderer.capabilities.getMaxAnisotropy();
 
@@ -487,6 +490,8 @@ export class World {
     this.elapsed = 0;
     this.mode = 'menu';
     this.paused = false;
+    this.contextLost = false;
+    this.onContextLost = () => {};
     this.keys = Object.create(null);
     this.onPlanetPick = () => {};
     this.onResourceCollect = () => {};
@@ -522,6 +527,17 @@ export class World {
     canvas.addEventListener('pointerup', () => { this.dragging = false; });
     canvas.addEventListener('pointercancel', () => { this.dragging = false; });
     canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+    canvas.addEventListener('webglcontextlost', (event) => {
+      event.preventDefault();
+      this.contextLost = true;
+      this.paused = true;
+      this.onContextLost(event);
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+      this.contextLost = false;
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.quality === 'balanced' ? 1.05 : 1.5));
+      this.renderer.setSize(window.innerWidth, window.innerHeight, false);
+    });
 
     this.showMenu();
     requestAnimationFrame(() => this.frame());
@@ -532,15 +548,21 @@ export class World {
     const height = window.innerHeight;
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.quality === 'balanced' ? 1.15 : 1.75));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.quality === 'balanced' ? 1.05 : 1.5));
     this.renderer.setSize(width, height, false);
   }
 
   setQuality(quality) {
-    this.quality = quality;
-    this.renderer.shadowMap.enabled = quality !== 'balanced';
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality === 'balanced' ? 1.15 : 1.75));
+    this.quality = quality === 'high' ? 'high' : 'balanced';
+    this.renderer.shadowMap.enabled = this.quality === 'high';
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.quality === 'balanced' ? 1.05 : 1.5));
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
+    if (this.surfaceKeyLight) {
+      this.surfaceKeyLight.castShadow = this.quality === 'high';
+      const resolution = this.quality === 'high' ? 1024 : 512;
+      this.surfaceKeyLight.shadow.mapSize.set(resolution, resolution);
+      this.surfaceKeyLight.shadow.needsUpdate = true;
+    }
   }
 
   clearWorld() {
@@ -648,7 +670,7 @@ export class World {
     this.mode = 'menu';
     this.paused = false;
     this.scene.background = new THREE.Color(0x02050d);
-    this.addStars(2400, 420, 4102);
+    this.addStars(1000, 420, 4102);
     this.camera.fov = 50;
     this.camera.position.set(0, 0, 14);
     this.camera.lookAt(0, 0, 0);
@@ -665,22 +687,11 @@ export class World {
     this.root.add(new THREE.AmbientLight(0x34465f, 1.45));
 
     if (earth) {
-      const earthGroup = makeGlobe(earth, 3.72, 1024);
+      const earthGroup = makeGlobe(earth, 3.72, 512);
       earthGroup.position.set(4.5, -0.15, -2.2);
       earthGroup.rotation.z = 0.21;
       this.root.add(earthGroup);
       this.menuPlanet = earthGroup;
-      this.menuTextureUpgrade = window.setTimeout(() => {
-        if (this.mode !== 'menu' || this.menuPlanet !== earthGroup) return;
-        const highResolutionTexture = makePlanetTexture(earth, 4096);
-        const surfaceMaterial = earthGroup.userData.surface.material;
-        const previousTexture = surfaceMaterial.map;
-        surfaceMaterial.map = highResolutionTexture;
-        surfaceMaterial.bumpMap = highResolutionTexture;
-        surfaceMaterial.needsUpdate = true;
-        previousTexture?.dispose();
-        this.menuTextureUpgrade = null;
-      }, 650);
 
       if (moonData) {
         const orbit = new THREE.Mesh(
@@ -692,7 +703,7 @@ export class World {
         this.root.add(orbit);
         const moonOrbit = new THREE.Group();
         moonOrbit.position.copy(earthGroup.position);
-        const moon = makeGlobe(moonData, 0.32, 512);
+        const moon = makeGlobe(moonData, 0.32, 128);
         moon.position.set(4.9, 0.38, 0);
         moonOrbit.add(moon);
         this.root.add(moonOrbit);
@@ -701,7 +712,7 @@ export class World {
     }
 
     if (mars) {
-      const distantMars = makeGlobe(mars, 0.72, 512);
+      const distantMars = makeGlobe(mars, 0.72, 128);
       distantMars.position.set(-8.4, -3.7, -15);
       this.root.add(distantMars);
     }
@@ -716,7 +727,7 @@ export class World {
     const system = window.__perigeeSystemData ?? { bodies: [], star: { colour: '#fff1cc', radius: 2.5, spectralClass: 'G2 V' } };
     const bodies = system.bodies ?? [];
     const seed = system.seed ?? 18041;
-    this.addStars(3200, 560, seed + 721);
+    this.addStars(1200, 560, seed + 721);
     this.root.add(new THREE.AmbientLight(0x526179, 1.45));
     this.addSun(new THREE.Vector3(0, 0, 0), system.star?.radius ?? 2.3, system.star?.colour ?? '#fff1cc');
 
@@ -731,7 +742,7 @@ export class World {
       const radius = mapRadius(planet);
       const angle = ((planet.seed ?? index * 79) % 628) / 100;
       const distanceToYear = Math.max(1, (planet.orbitalPeriod ?? 365) / 88);
-      const group = makeGlobe(planet, radius, planet.id === 'earth' ? 1024 : 512);
+      const group = makeGlobe(planet, radius, planet.id === 'earth' ? 256 : 128);
       group.position.set(Math.cos(angle) * distance, Math.sin(angle * 0.68) * 0.16, Math.sin(angle) * distance);
       group.userData.planetId = planet.id;
       group.userData.radius = radius;
@@ -771,7 +782,7 @@ export class World {
       const radius = Math.min(0.62, mapRadius(planet) * 0.73);
       const angle = ((planet.seed ?? index * 41) % 628) / 100;
       const speed = 0.32 / Math.sqrt(Math.max(0.15, planet.orbitalPeriod ?? 12));
-      const moon = makeGlobe(planet, radius, 512);
+      const moon = makeGlobe(planet, radius, 128);
       moon.position.set(Math.cos(angle) * moonDistance, 0.03, Math.sin(angle) * moonDistance);
       moon.userData.planetId = planet.id;
       moon.userData.radius = radius;
@@ -850,8 +861,9 @@ export class World {
     this.root.add(new THREE.HemisphereLight(planet.palette.sky, planet.palette.soil, planet.hasClouds ? 1.2 : 0.42));
     const sun = new THREE.DirectionalLight(starColour, sunlight);
     sun.position.set(135, 88, -275);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    sun.castShadow = this.quality === 'high';
+    const shadowResolution = this.quality === 'high' ? 1024 : 512;
+    sun.shadow.mapSize.set(shadowResolution, shadowResolution);
     sun.shadow.camera.left = -112;
     sun.shadow.camera.right = 112;
     sun.shadow.camera.top = 112;
@@ -867,9 +879,9 @@ export class World {
     );
     this.surfaceSun.position.set(135, 88, -275);
     this.root.add(this.surfaceSun);
-    this.addStars(1500, 780, planet.seed + 913);
+    this.addStars(550, 780, planet.seed + 913);
 
-    this.terrain = makeTerrainMaterial(planet);
+    this.terrain = makeTerrainMaterial(planet, this.quality);
     this.root.add(this.terrain);
     this.groundAt = (x, z) => terrainHeight(x, z, planet.seed, planet.terrainScale);
     this.addBoulders(planet);
@@ -1266,7 +1278,7 @@ export class World {
       this.updateLanding(delta);
     }
     this.onFrame(delta);
-    this.renderer.render(this.scene, this.camera);
+    if (!this.contextLost) this.renderer.render(this.scene, this.camera);
     requestAnimationFrame(() => this.frame());
   }
 }

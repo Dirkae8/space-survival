@@ -6,6 +6,7 @@ import '@fontsource/dm-mono/400.css';
 import '@fontsource/dm-mono/500.css';
 import './styles.css';
 import './override.css';
+import './low-end.css';
 import { SOLAR_SYSTEM, KNOWN_SYSTEMS, RESOURCE_INFO, RESOURCE_REQUIREMENTS, generateProceduralSystem, getPlanet } from './data.js';
 import { World } from './world.js';
 
@@ -20,11 +21,12 @@ let screen = 'menu';
 let selectedPlanet = getPlanet('mars');
 let run = null;
 let modal = null;
+let loadingError = false;
 let nearbyResource = null;
 let hudTimer = 0;
 let saveTimer = 0;
 let toastId = 0;
-let quality = 'high';
+let quality = 'balanced';
 
 function publishSystem() {
   window.__perigeeSystemData = activeSystem;
@@ -298,7 +300,10 @@ function renderLanding() {
 }
 
 function renderLoading() {
-  return `<section class="screen loading-screen" aria-label="Подготовка к высадке"><div class="loading-core"><div class="loading-orbit loading-orbit-one"></div><div class="loading-orbit loading-orbit-two"></div><span class="loading-core-mark">${brandMark()}</span></div><p class="eyebrow">ОРБИТАЛЬНЫЙ СПУСК</p><h1>${selectedPlanet.name}</h1><p class="loading-message">Расчёт траектории <i></i> оценка атмосферы <i></i> герметизация скафандра</p><div class="loading-track"><i></i></div><small>${activeSystem.name} · ${selectedPlanet.designation}</small></section>`;
+  if (loadingError) {
+    return `<section class="screen startup-error load-error" aria-label="Не удалось подготовить высадку"><span class="eyebrow">СИСТЕМА ПОВЕРХНОСТИ</span><h1>Мир не загрузился.</h1><p>Похоже, устройству не хватило ресурсов для подготовки сцены. Включён облегчённый режим; можно попробовать ещё раз или вернуться к карте.</p><div class="startup-error-actions"><button class="button button-primary" data-action="retry-landing">Повторить в лёгком режиме</button><button class="button button-quiet" data-action="return-system">Назад к карте</button></div></section>`;
+  }
+  return `<section class="screen loading-screen" aria-label="Подготовка к высадке"><div class="loading-core"><div class="loading-orbit loading-orbit-one"></div><div class="loading-orbit loading-orbit-two"></div><span class="loading-core-mark">${brandMark()}</span></div><p class="eyebrow">ОРБИТАЛЬНЫЙ СПУСК</p><h1>${selectedPlanet.name}</h1><p class="loading-message">Подготовка упрощённой сцены <i></i> рельеф и свет <i></i> экипировка</p><div class="loading-track"><i></i></div><small>${activeSystem.name} · ${selectedPlanet.designation}</small></section>`;
 }
 
 function renderModal() {
@@ -350,17 +355,39 @@ function beginLanding() {
   run.position = previousPlanetId === selectedPlanet.id ? previousPosition : null;
   run.visited = [...new Set([...(run.visited ?? []), selectedPlanet.id])];
   modal = null;
+  loadingError = false;
   nearbyResource = null;
   screen = 'loading';
   renderScreen();
   window.setTimeout(() => {
     if (screen !== 'loading') return;
-    world.showLanding(selectedPlanet, run);
-    screen = 'landing';
-    renderScreen();
-    saveRun();
-    showToast(`${selectedPlanet.name} · высадка завершена`, 'Управление камерой — мышью. Для освобождения курсора нажми Esc.');
-  }, 180);
+    try {
+      world.showLanding(selectedPlanet, run);
+      screen = 'landing';
+      renderScreen();
+      saveRun();
+      showToast(`${selectedPlanet.name} · высадка завершена`, 'Управление камерой — мышью. Для освобождения курсора нажми Esc.');
+    } catch (error) {
+      console.error('Не удалось загрузить сцену высадки:', error);
+      if (quality === 'high') {
+        quality = 'balanced';
+        try {
+          world.setQuality(quality);
+          world.showLanding(selectedPlanet, run);
+          screen = 'landing';
+          renderScreen();
+          saveRun();
+          showToast('Включён облегчённый режим', 'Высадка запущена с упрощённой графикой.');
+          return;
+        } catch (fallbackError) {
+          console.error('Облегчённый режим тоже не запустился:', fallbackError);
+        }
+      }
+      loadingError = true;
+      renderScreen();
+      showToast('Не удалось подготовить поверхность', 'Можно попробовать ещё раз или вернуться к карте.', 'warning');
+    }
+  }, 120);
 }
 
 function continueExpedition() {
@@ -541,6 +568,22 @@ function actionClick(action, button, event) {
     case 'solar-system':
       setSolarSystem();
       break;
+    case 'retry-landing':
+      loadingError = false;
+      quality = 'balanced';
+      world.setQuality(quality);
+      beginLanding();
+      break;
+    case 'return-system':
+      loadingError = false;
+      screen = 'system';
+      modal = null;
+      world.showSystem(false);
+      renderScreen();
+      break;
+    case 'reload-game':
+      window.location.reload();
+      break;
     case 'known-system': {
       const system = KNOWN_SYSTEMS.find((item) => item.id === button.dataset.system);
       if (!system) break;
@@ -713,10 +756,23 @@ function onPlanetPick(planetId) {
   renderScreen();
 }
 
+function showStartupError(error) {
+  console.error('Не удалось запустить 3D-движок:', error);
+  document.body.dataset.screen = 'startup-error';
+  canvas.style.display = 'none';
+  uiRoot.innerHTML = `<section class="screen startup-error" aria-label="Ошибка запуска"><span class="eyebrow">ПЕРИГЕЛИЙ · ЗАПУСК</span><h1>3D-сцена не запустилась.</h1><p>Проверьте, что в браузере включено аппаратное ускорение и поддерживается WebGL. Закройте другие тяжёлые вкладки и попробуйте перезагрузить игру.</p><button class="button button-primary" data-action="reload-game">Перезагрузить</button></section>`;
+}
+
 renderScreen();
-world = new World(canvas);
-world.onPlanetPick = onPlanetPick;
-world.onResourceCollect = onResourceCollect;
-world.onNearbyChange = (resource) => { nearbyResource = resource; updateHud(); };
-world.onFrame = tickGame;
-world.setQuality(quality);
+try {
+  world = new World(canvas);
+  world.onPlanetPick = onPlanetPick;
+  world.onContextLost = () => showStartupError(new Error('WebGL context lost: GPU memory limit reached.'));
+  world.onResourceCollect = onResourceCollect;
+  world.onNearbyChange = (resource) => { nearbyResource = resource; updateHud(); };
+  world.onFrame = tickGame;
+  world.setQuality(quality);
+} catch (error) {
+  world = null;
+  showStartupError(error);
+}
