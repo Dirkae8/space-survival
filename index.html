@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#050913" />
+    <meta name="description" content="ПЕРИГЕЛИЙ — first-person космическое выживание в Солнечной системе, известных экзосистемах и физически смоделированных мирах." />
+    <title>ПЕРИГЕЛИЙ — космос не ждёт</title>
+  </head>
+  <body>
+    <main id="app" aria-label="ПЕРИГЕЛИЙ: космическое выживание">
+      <canvas id="world-canvas" aria-label="Трёхмерный космос"></canvas>
+      <div class="screen-vignette" aria-hidden="true"></div>
+      <div class="noise-layer" aria-hidden="true"></div>
+      <div id="ui-root"></div>
+      <div id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
